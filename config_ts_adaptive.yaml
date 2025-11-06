@@ -1,0 +1,85 @@
+# Configuration for Time-Series Adaptive Line Strategy
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data_path: 'daily_am_pm_data.csv'  # Path to CSV with AM/PM half-daily data
+
+# =============================================================================
+# Walk-Forward Configuration
+# =============================================================================
+train_months: 12      # Training window in months
+val_months: 1         # Validation window in months
+embargo: 10           # Embargo periods between train/val (half-daily bars)
+
+# =============================================================================
+# Strategy Parameters (Fixed Template)
+# =============================================================================
+k_tanh: 1.0           # Tanh strength for position mapping
+z_L: 40               # Z-score lookback window (half-daily bars)
+cost_bps: 0.0005      # Transaction cost in basis points (one-side)
+vol_window: 60        # Rolling volatility window for risk-adjustment
+ann_K: 504            # Annualization factor (252 days * 2 sessions)
+
+# =============================================================================
+# Fitness Function: Information Sharpe + Constraints
+# =============================================================================
+
+# Constraint 1: Relative Maximum Drawdown
+cap_mdd: 0.05         # Maximum allowed relative MDD (5%)
+lambda_mdd: 3.0       # Penalty weight for MDD violation
+
+# Constraint 2: Absolute Excess Return
+gamma_excess: 2.0     # Penalty weight for negative excess return
+
+# Complexity and Turnover Penalties
+delta_complexity: 0.001   # Penalty per unit of formula complexity
+epsilon_turnover: 0.1     # Penalty for high turnover
+
+# Hard vs Soft Constraints
+hard_constraints: false   # If true, violations return -999 (elimination)
+                          # If false, use soft penalties
+
+# =============================================================================
+# Genetic Programming Configuration
+# =============================================================================
+gp_config:
+  # Population and Evolution
+  population_size: 200       # Number of candidate formulas
+  generations: 30            # Maximum generations
+  tournament_size: 20        # Tournament selection size
+  stopping_criteria: 2.0     # Stop if fitness reaches this value
+
+  # Genetic Operators
+  p_crossover: 0.7          # Probability of crossover
+  p_subtree_mutate: 0.15    # Probability of subtree mutation
+  p_hoist_mutate: 0.1       # Probability of hoist mutation
+  p_point_mutate: 0.05      # Probability of point mutation
+
+  # Tree Initialization
+  init_depth: [3, 6]        # Min and max initial depth
+  init_method: 'half and half'  # Initialization method
+
+  # Constants
+  const_range: [1, 10]      # Range for scalar constants
+  ts_const_range: [2, 60]   # Range for time-series window constants
+
+  # Build Preferences
+  build_preference: [0.75, 0.75]  # [function_prob, variable_prob]
+
+  # Parsimony
+  parsimony_coefficient: 0.001  # Penalty for formula complexity
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+results_path: 'results_ts_adaptive.csv'  # Where to save results
+
+# =============================================================================
+# Notes
+# =============================================================================
+# - All features are computed per-asset (no cross-sectional leakage)
+# - GP searches for adaptive line f(t), strategy mapping is fixed
+# - Benchmark is equal-weight buy-and-hold across pool
+# - Constraints: relative MDD ≤ 5%, absolute excess > 0
+# - Half-daily data: AM/PM sessions, ~504 sessions per year
