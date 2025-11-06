@@ -146,9 +146,10 @@ def _strategy_three_line_confirmation(
     sr_lower = sr_ma - band_width * sr_std
 
     # Normalize factor to -1, 0, 1 signals
-    sr_factor_norm = pd.Series(np.zeros(len(factor)))
-    sr_factor_norm[sr_factor > factor_threshold] = 1
-    sr_factor_norm[sr_factor < -factor_threshold] = -1
+    factor_norm = np.zeros(len(factor))
+    factor_norm[sr_factor.values > factor_threshold] = 1
+    factor_norm[sr_factor.values < -factor_threshold] = -1
+    sr_factor_norm = pd.Series(factor_norm)
 
     # Price position relative to centerline
     price_above_center = sr_price > sr_center
