@@ -83,16 +83,49 @@ def _strategy_quantile(
     c_lower: float,
 ) -> np.ndarray:
     sr_factor = pd.Series(factor)
-    sr_factor.fillna(method="ffill", inplace=True)
+    sr_factor = sr_factor.ffill()
     sr_o_upper = sr_factor.rolling(d).quantile(o_upper)
     sr_o_lower = sr_factor.rolling(d).quantile(o_lower)
     sr_c_upper = sr_factor.rolling(d).quantile(c_upper)
     sr_c_lower = sr_factor.rolling(d).quantile(c_lower)
+
+    # Initialize signal array and position tracker
     signal = np.zeros((len(factor),))
-    signal[sr_factor > sr_o_upper] = 1
-    signal[sr_factor < sr_c_upper] = -1
-    signal[sr_factor > sr_o_lower] = -1
-    signal[sr_factor < sr_c_lower] = 1
+    position = 0  # Track cumulative position: 0 = flat, >0 = long, <0 = short
+
+    # Loop through bars to check position state before emitting signals
+    for i in range(len(factor)):
+        # Skip if any threshold is NaN (not enough history)
+        if pd.isna(sr_o_upper.iloc[i]) or pd.isna(sr_o_lower.iloc[i]) or \
+           pd.isna(sr_c_upper.iloc[i]) or pd.isna(sr_c_lower.iloc[i]):
+            continue
+
+        current_factor = sr_factor.iloc[i]
+
+        if position == 0:  # No position - check entry conditions
+            if current_factor > sr_o_upper.iloc[i]:
+                signal[i] = 1  # Open long
+                position += 1
+            elif current_factor < sr_o_lower.iloc[i]:
+                signal[i] = -1  # Open short
+                position -= 1
+
+        elif position > 0:  # Long position - check exit conditions
+            if current_factor < sr_c_upper.iloc[i]:
+                signal[i] = -position  # Close long (flatten to 0)
+                position = 0
+            elif current_factor < sr_o_lower.iloc[i]:
+                signal[i] = -position - 1  # Reverse to short
+                position = -1
+
+        elif position < 0:  # Short position - check exit conditions
+            if current_factor > sr_c_lower.iloc[i]:
+                signal[i] = -position  # Close short (flatten to 0)
+                position = 0
+            elif current_factor > sr_o_upper.iloc[i]:
+                signal[i] = -position + 1  # Reverse to long
+                position = 1
+
     return __limit_max_position(signal)
 
 
