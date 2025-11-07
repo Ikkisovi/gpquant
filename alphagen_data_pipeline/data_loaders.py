@@ -76,23 +76,40 @@ def load_all_symbols_data(symbols, data_path, start_date, end_date):
         print("No data loaded for any symbols")
         return pd.DataFrame()
 
-def aggregate_to_am_pm(
+def aggregate_data_with_resolution(
     data_path: str,
     shares_file: str,
     start_date_str: str,
     end_date_str: str,
+    resolution: str = "AM/PM"
 ) -> pd.DataFrame:
     """
-    Reads minute-level stock data, aggregates it into two sessions (AM and PM),
-    and calculates vwap, mktcap, and turnover.
-    Returns DataFrame with columns: ['symbol','date','session','open','high','low','close','volume','vwap','mktcap','turnover',...]
-    session ∈ {'AM','PM'}
+    Reads minute-level stock data and aggregates it based on the specified resolution.
+
+    Args:
+        data_path: Path to minute-level data
+        shares_file: Path to shares outstanding CSV
+        start_date_str: Start date in 'YYYY-MM-DD' format
+        end_date_str: End date in 'YYYY-MM-DD' format
+        resolution: Data resolution to aggregate to. Options:
+            - "AM/PM" or "ampm": Morning/Afternoon sessions (split at 12:00 ET)
+            - "1D" or "daily": Daily bars
+            - "30T" or "30min": 30-minute bars
+            - "1H" or "1h": 1-hour bars
+            - "2H" or "2h": 2-hour bars
+            - Any pandas frequency string (e.g., "15T", "4H")
+
+    Returns:
+        DataFrame with columns: ['symbol','date','session','open','high','low','close','volume','vwap','mktcap','turnover',...]
+        For AM/PM: session ∈ {'AM','PM'}
+        For time-based: session represents the time period (e.g., '09:30', '10:00')
+        For daily: session = 'FULL'
     """
     start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
     end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
 
     # --- 1. Load Minute Data ---
-    print("--- Step 1: Loading Minute Data ---")
+    print(f"--- Step 1: Loading Minute Data (Resolution: {resolution}) ---")
     symbols = [d for d in os.listdir(data_path) if os.path.isdir(os.path.join(data_path, d))]
     if not symbols:
         print(f"Error: No symbol directories found in '{data_path}'")
@@ -120,25 +137,49 @@ def aggregate_to_am_pm(
         return pd.DataFrame()
     print("Shares outstanding data merged successfully.")
 
-    # --- 3. Prepare Data and Define Sessions ---
-    print("\n--- Step 3: Defining AM/PM Sessions ---")
+    # --- 3. Prepare Data ---
+    print(f"\n--- Step 3: Defining {resolution} Resolution ---")
     df['datetime'] = df['datetime'].dt.tz_localize("America/New_York", ambiguous='infer')
     df['date'] = df['datetime'].dt.date
-    df['session'] = np.where(df['datetime'].dt.hour < 12, 'AM', 'PM')
     df = df.sort_values(["symbol", "datetime"]).reset_index(drop=True)
-    print("AM/PM sessions defined (Split at 12:00 ET).")
 
-    # --- 4. Aggregate Data ---
-    print("\n--- Step 4: Aggregating Data into Sessions ---")
+    # --- 4. Define Sessions Based on Resolution ---
+    resolution_upper = resolution.upper()
+
+    if resolution_upper in ['AM/PM', 'AMPM']:
+        # AM/PM split at 12:00 ET
+        df['session'] = np.where(df['datetime'].dt.hour < 12, 'AM', 'PM')
+        print("AM/PM sessions defined (Split at 12:00 ET).")
+        groupby_cols = ['symbol', 'date', 'session']
+
+    elif resolution_upper in ['1D', 'DAILY']:
+        # Daily aggregation
+        df['session'] = 'FULL'
+        print("Daily resolution defined (one bar per day).")
+        groupby_cols = ['symbol', 'date', 'session']
+
+    else:
+        # Time-based aggregation (30T, 1H, 2H, etc.)
+        # Use pandas resample for flexible time-based aggregation
+        print(f"Time-based resolution defined: {resolution}")
+
+        # Create a period identifier for grouping
+        # Resample to the specified frequency and create session labels
+        df['period'] = df['datetime'].dt.floor(resolution)
+        df['session'] = df['period'].dt.strftime('%H:%M')
+        groupby_cols = ['symbol', 'date', 'session', 'period']
+
+    # --- 5. Aggregate Data ---
+    print(f"\n--- Step 4: Aggregating Data to {resolution} Resolution ---")
     def calculate_vwap(group):
         if group['volume'].sum() > 0:
             return np.average(group['close'], weights=group['volume'])
         return np.nan
 
-    grouped = df.groupby(['symbol', 'date', 'session'])
+    grouped = df.groupby(groupby_cols)
     vwap = grouped.apply(calculate_vwap).rename('vwap').reset_index()
 
-    session_df = grouped.agg(
+    agg_df = grouped.agg(
         open=('open', 'first'),
         high=('high', 'max'),
         low=('low', 'min'),
@@ -147,30 +188,78 @@ def aggregate_to_am_pm(
         shares_outstanding=('shares_outstanding', 'first')
     ).reset_index()
 
-    session_df = pd.merge(session_df, vwap, on=['symbol', 'date', 'session'])
-    print("Aggregation to sessions complete.")
+    # Drop 'period' column if it exists (used for grouping but not needed in output)
+    if 'period' in agg_df.columns:
+        merge_cols = ['symbol', 'date', 'session', 'period']
+        agg_df = pd.merge(agg_df, vwap, on=merge_cols)
+        agg_df = agg_df.drop(columns=['period'])
+    else:
+        merge_cols = ['symbol', 'date', 'session']
+        agg_df = pd.merge(agg_df, vwap, on=merge_cols)
 
-    # --- 5. Calculate Financial Metrics ---
+    print(f"Aggregation to {resolution} complete.")
+
+    # --- 6. Calculate Financial Metrics ---
     print("\n--- Step 5: Calculating Financial Metrics ---")
-    session_df['mktcap'] = session_df['close'] * session_df['shares_outstanding']
-    session_df['turnover'] = session_df.apply(
+    agg_df['mktcap'] = agg_df['close'] * agg_df['shares_outstanding']
+    agg_df['turnover'] = agg_df.apply(
         lambda row: row['volume'] / row['shares_outstanding'] if row['shares_outstanding'] > 0 else 0,
         axis=1
     )
     print("Calculated 'mktcap' and 'turnover'.")
 
-    # --- 6. Finalize Data ---
+    # --- 7. Finalize Data ---
     print("\n--- Step 6: Finalizing Data ---")
-    session_df['timestamp'] = (
-        pd.to_datetime(session_df['date']).dt.tz_localize("America/New_York")
-        + pd.to_timedelta(session_df['session'].map({'AM': '12H', 'PM': '16H'}))
-    )
+
+    # Create timestamp based on resolution
+    if resolution_upper in ['AM/PM', 'AMPM']:
+        agg_df['timestamp'] = (
+            pd.to_datetime(agg_df['date']).dt.tz_localize("America/New_York")
+            + pd.to_timedelta(agg_df['session'].map({'AM': '12H', 'PM': '16H'}))
+        )
+    elif resolution_upper in ['1D', 'DAILY']:
+        # Use market close time (4:00 PM ET) for daily bars
+        agg_df['timestamp'] = (
+            pd.to_datetime(agg_df['date']).dt.tz_localize("America/New_York")
+            + pd.to_timedelta('16H')
+        )
+    else:
+        # For time-based resolutions, use the session time
+        agg_df['timestamp'] = pd.to_datetime(
+            agg_df['date'].astype(str) + ' ' + agg_df['session'],
+            format='%Y-%m-%d %H:%M'
+        ).dt.tz_localize("America/New_York")
 
     final_cols = [
         'symbol', 'timestamp', 'date', 'session', 'open', 'high', 'low', 'close',
         'volume', 'vwap', 'mktcap', 'turnover'
     ]
-    session_df = session_df[final_cols]
-    session_df = session_df.sort_values(by=['symbol', 'timestamp']).reset_index(drop=True)
+    agg_df = agg_df[final_cols]
+    agg_df = agg_df.sort_values(by=['symbol', 'timestamp']).reset_index(drop=True)
 
-    return session_df
+    return agg_df
+
+
+def aggregate_to_am_pm(
+    data_path: str,
+    shares_file: str,
+    start_date_str: str,
+    end_date_str: str,
+) -> pd.DataFrame:
+    """
+    Reads minute-level stock data, aggregates it into two sessions (AM and PM),
+    and calculates vwap, mktcap, and turnover.
+
+    This function is kept for backward compatibility.
+    It calls aggregate_data_with_resolution() with resolution="AM/PM".
+
+    Returns DataFrame with columns: ['symbol','date','session','open','high','low','close','volume','vwap','mktcap','turnover',...]
+    session ∈ {'AM','PM'}
+    """
+    return aggregate_data_with_resolution(
+        data_path=data_path,
+        shares_file=shares_file,
+        start_date_str=start_date_str,
+        end_date_str=end_date_str,
+        resolution="AM/PM"
+    )
